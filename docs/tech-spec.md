@@ -74,9 +74,14 @@ start at 1), `created_at`, `updated_at` (ISO 8601 UTC).
 | `docs:index` | sorted set | member = id, score = created_at as epoch seconds. Entries older than the TTL are trimmed on each list call |
 | `docs:stream` | stream | entries with a single field `doc_id` |
 
-Consumer group `docs:workers`, created with `XGROUP CREATE ... MKSTREAM` by both the
-API and the worker at startup (ignore `BUSYGROUP`). Consumer name = container
-hostname.
+Consumer group `docs:workers`, created at id `0` with `XGROUP CREATE ... MKSTREAM` by
+each worker at startup (ignore `BUSYGROUP`), so entries added before the first worker
+started are still delivered. Consumer name = container hostname. The API adds the
+stream entry in the same transaction that stores the document.
+
+While a job runs, the worker refreshes its entry's idle time with `XCLAIM ... JUSTID`
+(which does not count as a delivery) so a long job is not taken over by another
+worker.
 
 Redis runs with `--appendonly yes` and a named volume.
 

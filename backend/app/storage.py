@@ -1,9 +1,14 @@
 import json
 import time
+from datetime import UTC, datetime
+from enum import Enum
+from typing import Any
 
 from redis.asyncio import Redis
+from redis.exceptions import WatchError
 
-from app.models import Document, DocumentBrief
+from app.models import Document, DocumentBrief, Page
+from app.queue import STREAM_KEY
 
 INDEX_KEY = "docs:index"
 BRIEF_FIELDS = [
@@ -31,6 +36,16 @@ def _to_hash(doc: Document) -> dict[str, str]:
     return {key: "" if value is None else str(value) for key, value in data.items()}
 
 
+def _serialize_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Enum):
+        return str(value.value)
+    if isinstance(value, list):
+        return json.dumps([p.model_dump() if isinstance(p, Page) else p for p in value])
+    return str(value)
+
+
 def _from_hash(data: dict[str, str]) -> dict:
     result: dict = {}
     for key, value in data.items():
@@ -53,14 +68,41 @@ class DocumentRepository:
         self.ttl_seconds = ttl_seconds
 
     async def create_many(self, docs: list[Document]) -> None:
-        # One transaction, so a failure never leaves some documents stored.
+        """Store documents and queue them for processing.
+
+        One transaction, so a document exists exactly when it is queued and a
+        failure never leaves some of the documents stored.
+        """
         async with self.redis.pipeline(transaction=True) as pipe:
             for doc in docs:
                 key = doc_key(doc.id)
                 pipe.hset(key, mapping=_to_hash(doc))
                 pipe.expire(key, self.ttl_seconds)
                 pipe.zadd(INDEX_KEY, {doc.id: doc.created_at.timestamp()})
+                pipe.xadd(STREAM_KEY, {"doc_id": doc.id})
             await pipe.execute()
+
+    async def update(self, doc_id: str, **fields: Any) -> bool:
+        """Change fields of an existing document; returns False if it has expired.
+
+        Never recreates an expired document: the existence check and the write are
+        one watched transaction.
+        """
+        key = doc_key(doc_id)
+        mapping = {name: _serialize_field(value) for name, value in fields.items()}
+        mapping["updated_at"] = datetime.now(UTC).isoformat()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            while True:
+                try:
+                    await pipe.watch(key)
+                    if not await pipe.exists(key):
+                        return False
+                    pipe.multi()
+                    pipe.hset(key, mapping=mapping)
+                    await pipe.execute()
+                    return True
+                except WatchError:
+                    continue
 
     async def get(self, doc_id: str) -> Document | None:
         data = await self.redis.hgetall(doc_key(doc_id))
