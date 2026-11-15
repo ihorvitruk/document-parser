@@ -1,10 +1,19 @@
 from app.config import Settings
+from app.errors import PermanentError
 from app.models import ParserInfo, ParserName
+from app.parsers.base import Parser
+from app.parsers.pypdf_parser import PyPdfParser
 
 LABELS = {
     ParserName.pypdf: "PyPDF (text only)",
     ParserName.gemini: "Google Gemini (markdown)",
     ParserName.gpt5mini: "OpenAI GPT-5 Mini",
+}
+
+# Parsers that exist so far. The Gemini and GPT-5 Mini parsers are added to this
+# mapping as they are built.
+_IMPLEMENTATIONS: dict[ParserName, type[Parser]] = {
+    ParserName.pypdf: PyPdfParser,
 }
 
 
@@ -24,3 +33,10 @@ def list_parsers(settings: Settings) -> list[ParserInfo]:
             ParserInfo(name=name, label=LABELS[name], available=available, reason=reason)
         )
     return infos
+
+
+def get_parser(name: ParserName) -> Parser:
+    implementation = _IMPLEMENTATIONS.get(name)
+    if implementation is None:
+        raise PermanentError(f"The '{name}' parser is not implemented")
+    return implementation()

@@ -135,9 +135,12 @@ never dies because of one document. `SIGTERM` lets the current job finish.
 ```python
 class Parser(Protocol):
     name: ParserName
-    def available(self) -> tuple[bool, str | None]: ...
     async def parse(self, path: Path) -> list[Page]: ...
 ```
+
+Availability (API key present or not) is decided in `parsers/registry.py` from the
+settings, not by the parser classes. `get_parser(name)` raises `PermanentError` for a
+parser that is not built yet.
 
 - **PyPDF:** runs in `asyncio.to_thread`. Encrypted or unreadable files raise
   `PermanentError`. Empty pages are kept with empty content.
