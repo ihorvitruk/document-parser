@@ -10,6 +10,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pypdf>=5.0",
     "cryptography>=43",  # lets pypdf open AES-encrypted PDFs
+    "google-genai>=1.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

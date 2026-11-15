@@ -10,6 +10,7 @@ from redis.exceptions import RedisError
 
 from app import queue
 from app.config import Settings, get_settings
+from app.llm.summarizer import Summarizer, create_summarizer
 from app.models import ParserName
 from app.parsers.base import Parser
 from app.parsers.registry import get_parser
@@ -30,11 +31,13 @@ class Worker:
         settings: Settings,
         consumer: str,
         parser_factory: Callable[[ParserName], Parser] = get_parser,
+        summarizer: Summarizer | None = None,
     ):
         self.redis = redis
         self.settings = settings
         self.consumer = consumer
         self.parser_factory = parser_factory
+        self.summarizer = summarizer
         self.repo = DocumentRepository(redis, settings.document_ttl_seconds)
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -79,7 +82,9 @@ class Worker:
         logger.info("doc=%s picked up (delivery %d)", doc_id, entry.deliveries)
         heartbeat = asyncio.create_task(self._heartbeat(entry.entry_id))
         try:
-            await process_document(doc_id, self.repo, self.settings, self.parser_factory)
+            await process_document(
+                doc_id, self.repo, self.settings, self.parser_factory, self.summarizer
+            )
         except Exception:
             logger.exception("doc=%s crashed unexpectedly", doc_id)
             await fail_document(
@@ -106,13 +111,23 @@ async def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     settings = get_settings()
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    # The socket timeout must be longer than the blocking read (BLOCK_MS), otherwise
+    # an idle queue looks like a Redis outage.
+    redis = Redis.from_url(
+        settings.redis_url, decode_responses=True, socket_timeout=BLOCK_MS / 1000 + 15
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     try:
-        await Worker(redis, settings, consumer=socket.gethostname()).run(stop)
+        worker = Worker(
+            redis,
+            settings,
+            consumer=socket.gethostname(),
+            summarizer=create_summarizer(settings),
+        )
+        await worker.run(stop)
     finally:
         await redis.aclose()
 

@@ -104,6 +104,106 @@ async def test_document_is_processed_end_to_end_with_pypdf(make_worker, submit, 
     assert await redis.xlen(queue.STREAM_KEY) == 0
 
 
+class FakeSummarizer:
+    def __init__(self, summary="A summary.", error=None):
+        self.summary = summary
+        self.error = error
+        self.calls = 0
+
+    async def summarize(self, pages):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.summary
+
+
+def worker_with(redis, settings, summarizer):
+    return Worker(redis, settings, "worker-a", summarizer=summarizer)
+
+
+async def test_summary_is_stored_with_the_document(submit, repo, redis, settings):
+    doc_id = await submit(build_pdf(["Alpha"]))
+    await queue.ensure_group(redis)
+    summarizer = FakeSummarizer("It says Alpha.")
+
+    await worker_with(redis, settings, summarizer).run_once(block_ms=10)
+
+    doc = await repo.get(doc_id)
+    assert doc.status is DocumentStatus.done
+    assert doc.summary == "It says Alpha."
+    assert doc.summary_error is None
+
+
+async def test_failed_summary_keeps_the_pages_and_the_document_done(submit, repo, redis, settings):
+    doc_id = await submit(build_pdf(["Alpha", "Beta"]))
+    await queue.ensure_group(redis)
+    summarizer = FakeSummarizer(error=TransientError("Gemini rate limit reached (gave up after 3 attempts)"))
+
+    await worker_with(redis, settings, summarizer).run_once(block_ms=10)
+
+    doc = await repo.get(doc_id)
+    assert doc.status is DocumentStatus.done
+    assert [p.content for p in doc.pages] == ["Alpha", "Beta"]
+    assert doc.summary is None
+    assert "rate limit" in doc.summary_error
+    assert doc.error is None
+
+
+async def test_unexpected_summary_crash_does_not_fail_the_document(submit, repo, redis, settings):
+    doc_id = await submit(build_pdf(["Alpha"]))
+    await queue.ensure_group(redis)
+
+    await worker_with(redis, settings, FakeSummarizer(error=RuntimeError("boom"))).run_once(block_ms=10)
+
+    doc = await repo.get(doc_id)
+    assert doc.status is DocumentStatus.done
+    assert doc.summary is None
+    assert "boom" not in doc.summary_error
+    assert len(doc.pages) == 1
+
+
+async def test_without_a_gemini_key_the_document_is_done_and_says_why(submit, repo, redis, settings):
+    doc_id = await submit(build_pdf(["Alpha"]))
+    await queue.ensure_group(redis)
+
+    await worker_with(redis, settings, None).run_once(block_ms=10)
+
+    doc = await repo.get(doc_id)
+    assert doc.status is DocumentStatus.done
+    assert "GEMINI_API_KEY" in doc.summary_error
+
+
+async def test_document_without_text_skips_the_summary_call(submit, repo, redis, settings):
+    doc_id = await submit(build_pdf(["", ""]))
+    await queue.ensure_group(redis)
+    summarizer = FakeSummarizer()
+
+    await worker_with(redis, settings, summarizer).run_once(block_ms=10)
+
+    doc = await repo.get(doc_id)
+    assert summarizer.calls == 0
+    assert doc.status is DocumentStatus.done
+    assert doc.page_count == 2
+    assert "no extractable text" in doc.summary_error
+
+
+async def test_failed_parse_does_not_attempt_a_summary(submit, repo, redis, settings):
+    await submit()
+    await queue.ensure_group(redis)
+    summarizer = FakeSummarizer()
+    worker = Worker(
+        redis,
+        settings,
+        "worker-a",
+        parser_factory=lambda name: FakeParser(error=PermanentError("corrupt")),
+        summarizer=summarizer,
+    )
+
+    await worker.run_once(block_ms=10)
+
+    assert summarizer.calls == 0
+
+
 async def test_queue_is_empty_when_nothing_was_submitted(make_worker):
     worker = await make_worker()
     assert await worker.run_once(block_ms=10) == 0
