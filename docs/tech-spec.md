@@ -155,8 +155,14 @@ parser that is not built yet.
   chunks of `PAGES_PER_CHUNK` pages; each chunk is sent as a PDF part with a prompt
   asking for faithful markdown per page, with a JSON response schema
   `[{page_number, markdown}]`. Page numbers are re-based to the whole document.
-- **GPT-5 Mini:** `openai` SDK, same chunking and output contract, PDF passed as a
-  file input.
+- **GPT-5 Mini:** `openai` SDK, Responses API (`responses.create`), same chunking and
+  output contract as Gemini (shared code in `parsers/chunked.py`). Each chunk goes as
+  an `input_file` part (base64 data URL) plus an `input_text` prompt. OpenAI reads
+  both the text and the page images of a PDF, so scans work. The answer is
+  constrained by a strict JSON schema; structured outputs need an object at the top
+  level, so the pages are wrapped as `{"pages": [...]}`. The SDK's own retries are
+  disabled in favour of ours. A 429 with code `insufficient_quota` is a permanent
+  error ("no credit left"), any other 429 is transient.
 
 ## LLM retry
 

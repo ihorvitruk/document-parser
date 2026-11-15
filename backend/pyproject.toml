@@ -11,6 +11,7 @@ dependencies = [
     "pypdf>=5.0",
     "cryptography>=43",  # lets pypdf open AES-encrypted PDFs
     "google-genai>=1.0",
+    "openai>=1.66",  # Responses API
     "httpx>=0.27",
 ]
 

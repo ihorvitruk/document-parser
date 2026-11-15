@@ -196,10 +196,3 @@ def test_factory_refuses_a_parser_whose_key_is_missing():
         factory(ParserName.gemini)
     with pytest.raises(PermanentError, match="OpenAI key required"):
         factory(ParserName.gpt5mini)
-
-
-def test_factory_reports_parsers_that_are_not_built_yet():
-    factory = build_parser_factory(Settings(openai_api_key="k"))
-
-    with pytest.raises(PermanentError, match="not implemented"):
-        factory(ParserName.gpt5mini)

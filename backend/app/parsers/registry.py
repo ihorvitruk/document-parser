@@ -3,9 +3,11 @@ from collections.abc import Callable
 from app.config import Settings
 from app.errors import PermanentError
 from app.llm.gemini import create_gemini_client
+from app.llm.openai_client import create_openai_client
 from app.models import ParserInfo, ParserName
 from app.parsers.base import Parser
 from app.parsers.gemini_parser import GeminiParser
+from app.parsers.openai_parser import OpenAIParser
 from app.parsers.pypdf_parser import PyPdfParser
 
 LABELS = {
@@ -45,8 +47,11 @@ def _create(name: ParserName, settings: Settings) -> Parser:
             pages_per_chunk=settings.pages_per_chunk,
             concurrency=settings.llm_concurrency,
         )
-    # The GPT-5 Mini parser is added here when it is built.
-    raise PermanentError(f"The '{name}' parser is not implemented")
+    return OpenAIParser(
+        create_openai_client(settings),
+        pages_per_chunk=settings.pages_per_chunk,
+        concurrency=settings.llm_concurrency,
+    )
 
 
 def build_parser_factory(settings: Settings) -> Callable[[ParserName], Parser]:

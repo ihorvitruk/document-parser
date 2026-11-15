@@ -57,3 +57,41 @@ class HandlerSdk:
             return SimpleNamespace(text=self.handler(kwargs["contents"]))
         finally:
             self.in_flight -= 1
+
+
+class FakeOpenAISdk:
+    """Looks like openai.AsyncOpenAI for the one call we use (responses.create).
+
+    Each entry of `outcomes` is consumed by one request: a string becomes the output
+    text, an exception is raised, a SimpleNamespace is returned as is, a callable is
+    awaited.
+    """
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.requests = []
+        self.responses = SimpleNamespace(create=self._create)
+
+    async def _create(self, **kwargs):
+        self.requests.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, SimpleNamespace):
+            return outcome
+        if callable(outcome):
+            return await outcome()
+        return SimpleNamespace(output_text=outcome, status="completed")
+
+
+class OpenAIHandlerSdk(FakeOpenAISdk):
+    """Answers every request with `handler(content) -> str`."""
+
+    def __init__(self, handler):
+        super().__init__()
+        self.handler = handler
+
+    async def _create(self, **kwargs):
+        self.requests.append(kwargs)
+        content = kwargs["input"][0]["content"]
+        return SimpleNamespace(output_text=self.handler(content), status="completed")
