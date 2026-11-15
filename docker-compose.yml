@@ -51,6 +51,19 @@ services:
     depends_on:
       - api
 
+  # Not started by `docker compose up`; run with:
+  #   docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      REDIS_URL: redis://redis:6379/15  # a separate Redis database, flushed by the tests
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   redis-data:
   uploads:

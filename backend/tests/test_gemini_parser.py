@@ -1,9 +1,7 @@
 import json
-from io import BytesIO
 
 import pytest
 from google.genai import errors
-from pypdf import PdfReader
 
 from app.config import Settings
 from app.errors import PermanentError, TransientError
@@ -12,25 +10,8 @@ from app.models import ParserName
 from app.parsers.gemini_parser import GeminiParser
 from app.parsers.pypdf_parser import PyPdfParser
 from app.parsers.registry import build_parser_factory
-from tests.fakes import FakeSdk, HandlerSdk, Recorder
+from tests.fakes import FakeSdk, HandlerSdk, Recorder, chunk_pages, markdown_answer
 from tests.pdf_factory import build_pdf, encrypt_pdf
-
-
-def chunk_pages(contents) -> list[str]:
-    """The text of each page of the PDF part in a request."""
-    part = contents[0]
-    assert part.inline_data.mime_type == "application/pdf"
-    return [p.extract_text().strip() for p in PdfReader(BytesIO(part.inline_data.data)).pages]
-
-
-def markdown_answer(contents) -> str:
-    """What a well-behaved model returns: each page's text, in bold."""
-    return json.dumps(
-        [
-            {"page_number": i, "markdown": f"**{text}**"}
-            for i, text in enumerate(chunk_pages(contents), start=1)
-        ]
-    )
 
 
 def parser_with(sdk, pages_per_chunk=3, concurrency=3, attempts=3):

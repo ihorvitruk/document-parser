@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Parser: how it works</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #1c2430; --muted: #5b6677; --line: #aab3c2; --surface: #f4f6fa;
+    --blue: #2f55d4; --blue-soft: #e6ecfd; --green: #17794a; --green-soft: #e1f3ea;
+    --amber: #9a6700; --amber-soft: #fff1cc; --red: #b42318; --red-soft: #fde8e6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 32px; margin: 0 0 6px; }
+  h2 { font-size: 22px; margin: 44px 0 10px; padding-top: 10px; border-top: 2px solid var(--blue); }
+  h3 { font-size: 16px; margin: 22px 0 6px; break-after: avoid; }
+  p { margin: 8px 0; }
+  .lead { font-size: 17px; color: var(--muted); margin-bottom: 18px; }
+  code { font: 13px ui-monospace, Menlo, Consolas, monospace; background: var(--surface);
+         padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--surface); }
+  figure { margin: 14px 0 22px; break-inside: avoid; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  svg { width: 100%; height: auto; display: block; }
+  .box { background: var(--blue-soft); border-left: 4px solid var(--blue); padding: 10px 14px;
+         border-radius: 4px; margin: 14px 0; break-inside: avoid; }
+  .terms { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+  .terms dt { font-weight: 700; } .terms dd { margin: 0; }
+  /* diagram styles */
+  .node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+  .node.blue { fill: var(--blue-soft); stroke: var(--blue); }
+  .node.green { fill: var(--green-soft); stroke: var(--green); }
+  .node.amber { fill: var(--amber-soft); stroke: var(--amber); }
+  .node.red { fill: var(--red-soft); stroke: var(--red); }
+  .t { font: 600 13px system-ui, sans-serif; fill: var(--text); text-anchor: middle; }
+  .s { font: 12px system-ui, sans-serif; fill: var(--muted); text-anchor: middle; }
+  .l { font: 12px system-ui, sans-serif; fill: var(--text); paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+  .mid { text-anchor: middle; } .start { text-anchor: start; }
+  .ln { stroke: var(--text); stroke-width: 1.6; fill: none; }
+  .dash { stroke-dasharray: 5 4; }
+  .life { stroke: var(--line); stroke-dasharray: 3 4; stroke-width: 1.2; }
+  .ret { stroke: var(--muted); stroke-dasharray: 5 4; }
+  .num { font: 700 11px system-ui, sans-serif; fill: #fff; text-anchor: middle; }
+  .bad { stroke: var(--red); } .ok { stroke: var(--green); }
+  @media print {
+    @page { size: A4; margin: 14mm; }
+    main { padding: 0; max-width: none; }
+    h2 { break-after: avoid; } table, .box { break-inside: avoid; }
+    body { font-size: 12.5px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Document Parser: how it works</h1>
+<p class="lead">A guided tour of the system for someone seeing it for the first time: what runs where,
+what happens to a document from upload to result, and why it is built this way.</p>
+
+<div class="box"><strong>In one sentence.</strong> A user uploads PDFs; the API immediately says "accepted" and puts
+each document in a queue; background workers take documents from the queue, extract the text of every page
+(with PyPDF or an LLM) and ask Gemini for a summary; the website shows the results as they become ready.</div>
+
+<h3>Terms used below</h3>
+<dl class="terms">
+  <dt>API</dt><dd>The web server (FastAPI) that the browser talks to. It never does the slow work itself.</dd>
+  <dt>Worker</dt><dd>A background program that takes documents from the queue and processes them. Several run at once.</dd>
+  <dt>Queue</dt><dd>A list of jobs waiting to be done. Here it is a Redis <em>Stream</em>.</dd>
+  <dt>Consumer group</dt><dd>A Redis feature that hands each queue entry to exactly one worker of a team.</dd>
+  <dt>Acknowledge (ack)</dt><dd>A worker telling Redis "this job is finished". Unacknowledged jobs are not forgotten.</dd>
+  <dt>Parser</dt><dd>The method that turns a PDF into text: PyPDF, Gemini or GPT-5 Mini.</dd>
+</dl>
+
+<h2>1. The pieces</h2>
+<p>Four kinds of container, started together by Docker Compose.</p>
+<figure>
+<svg viewBox="0 0 840 330" role="img" aria-label="Architecture overview">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1c2430"/></marker></defs>
+  <rect class="node" x="10" y="125" width="100" height="60" rx="8"/><text class="t" x="60" y="160">Browser</text>
+  <rect class="node blue" x="160" y="125" width="140" height="60" rx="8"/><text class="t" x="230" y="151">frontend</text><text class="s" x="230" y="169">nginx + React :3000</text>
+  <rect class="node blue" x="360" y="40" width="140" height="70" rx="8"/><text class="t" x="430" y="72">api</text><text class="s" x="430" y="90">FastAPI :8000</text>
+  <rect class="node amber" x="360" y="215" width="140" height="80" rx="8"/><text class="t" x="430" y="245">redis</text><text class="s" x="430" y="263">queue (stream)</text><text class="s" x="430" y="279">+ stored documents</text>
+  <rect class="node green" x="560" y="125" width="150" height="70" rx="8"/><text class="t" x="635" y="154">worker × 2</text><text class="s" x="635" y="172">parse + summarize</text>
+  <rect class="node" x="750" y="125" width="85" height="70" rx="8"/><text class="t" x="792" y="154">Gemini /</text><text class="t" x="792" y="171">OpenAI</text>
+  <rect class="node" x="560" y="14" width="150" height="46" rx="8"/><text class="t" x="635" y="34">uploads volume</text><text class="s" x="635" y="51">shared files</text>
+
+  <line class="ln" x1="110" y1="155" x2="160" y2="155" marker-end="url(#a)"/><text class="l mid" x="135" y="146">HTTP</text>
+  <line class="ln" x1="300" y1="140" x2="360" y2="95" marker-end="url(#a)"/><text class="l start" x="262" y="104">/api proxy</text>
+  <line class="ln" x1="430" y1="110" x2="430" y2="215" marker-start="url(#a)" marker-end="url(#a)"/><text class="l start" x="440" y="150">store + queue,</text><text class="l start" x="440" y="165">read results</text>
+  <line class="ln" x1="580" y1="190" x2="500" y2="235" marker-start="url(#a)" marker-end="url(#a)"/><text class="l start" x="532" y="232">take jobs,</text><text class="l start" x="532" y="246">save results</text>
+  <line class="ln" x1="710" y1="160" x2="750" y2="160" marker-start="url(#a)" marker-end="url(#a)"/><text class="l mid" x="730" y="150">LLM</text>
+  <line class="ln dash" x1="500" y1="62" x2="560" y2="42"/><line class="ln dash" x1="635" y1="125" x2="635" y2="60"/>
+  <text class="l start" x="515" y="86">writes</text><text class="l start" x="645" y="98">reads</text>
+</svg>
+<figcaption>The browser only ever talks to nginx. The API accepts uploads and answers queries; the workers do the slow work. Redis is the meeting point: it holds both the queue and the results.</figcaption>
+</figure>
+
+<h2>2. The life of a document</h2>
+<figure>
+<svg viewBox="0 0 840 520" role="img" aria-label="Sequence of a document through the system">
+  <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1c2430"/></marker><marker id="br" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5b6677"/></marker></defs>
+  <g class="t">
+    <rect class="node" x="35" y="8" width="110" height="34" rx="6"/><text x="90" y="30">Browser</text>
+    <rect class="node blue" x="205" y="8" width="110" height="34" rx="6"/><text x="260" y="30">API</text>
+    <rect class="node amber" x="375" y="8" width="110" height="34" rx="6"/><text x="430" y="30">Redis</text>
+    <rect class="node green" x="545" y="8" width="110" height="34" rx="6"/><text x="600" y="30">Worker</text>
+    <rect class="node" x="695" y="8" width="130" height="34" rx="6"/><text x="760" y="30">Gemini / OpenAI</text>
+  </g>
+  <g><line class="life" x1="90" y1="42" x2="90" y2="505"/><line class="life" x1="260" y1="42" x2="260" y2="505"/><line class="life" x1="430" y1="42" x2="430" y2="505"/><line class="life" x1="600" y1="42" x2="600" y2="505"/><line class="life" x1="760" y1="42" x2="760" y2="505"/></g>
+
+  <line class="ln" x1="90" y1="85" x2="260" y2="85" marker-end="url(#b)"/><text class="l mid" x="175" y="76">1 · upload PDFs + parser</text>
+  <line class="ln" x1="260" y1="125" x2="430" y2="125" marker-end="url(#b)"/><text class="l mid" x="345" y="105">2 · save file, store as</text><text class="l mid" x="345" y="118">"queued", add to queue</text>
+  <line class="ln ret" x1="260" y1="165" x2="90" y2="165" marker-end="url(#br)"/><text class="l mid" x="175" y="156">3 · 202 Accepted + ids</text>
+
+  <line class="ln" x1="600" y1="215" x2="430" y2="215" marker-end="url(#b)"/><text class="l mid" x="515" y="206">4 · take next job</text>
+  <line class="ln" x1="600" y1="250" x2="430" y2="250" marker-end="url(#b)"/><text class="l mid" x="515" y="241">5 · status = "processing"</text>
+  <line class="ln" x1="600" y1="295" x2="760" y2="295" marker-end="url(#b)"/><text class="l mid" x="680" y="276">6 · parse in page chunks</text><text class="l mid" x="680" y="289">(PyPDF runs locally instead)</text>
+  <line class="ln ret" x1="760" y1="330" x2="600" y2="330" marker-end="url(#br)"/><text class="l mid" x="680" y="321">7 · markdown per page</text>
+  <line class="ln" x1="600" y1="365" x2="760" y2="365" marker-end="url(#b)"/><text class="l mid" x="680" y="356">8 · summarize the text</text>
+  <line class="ln ret" x1="760" y1="400" x2="600" y2="400" marker-end="url(#br)"/><text class="l mid" x="680" y="391">9 · summary</text>
+  <line class="ln" x1="600" y1="440" x2="430" y2="440" marker-end="url(#b)"/><text class="l mid" x="515" y="421">10 · save pages + summary,</text><text class="l mid" x="515" y="434">status = "done", acknowledge</text>
+
+  <line class="ln" x1="90" y1="480" x2="260" y2="480" marker-end="url(#b)"/><text class="l mid" x="175" y="471">11 · poll every 1.5 s</text>
+  <line class="ln ret" x1="260" y1="500" x2="90" y2="500" marker-end="url(#br)"/><text class="l start" x="100" y="496">result</text>
+</svg>
+<figcaption>Steps 1 to 3 take milliseconds: the user gets an answer before any parsing has happened. Steps 4 to 10 happen later, in a worker. Step 11 repeats until the document is done.</figcaption>
+</figure>
+
+<h3>The states of a document</h3>
+<figure>
+<svg viewBox="0 0 840 250" role="img" aria-label="Document states">
+  <defs><marker id="c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1c2430"/></marker></defs>
+  <rect class="node" x="20" y="100" width="120" height="50" rx="25"/><text class="t" x="80" y="130">queued</text>
+  <rect class="node amber" x="270" y="100" width="130" height="50" rx="25"/><text class="t" x="335" y="130">processing</text>
+  <rect class="node green" x="560" y="40" width="120" height="50" rx="25"/><text class="t" x="620" y="70">done</text>
+  <rect class="node red" x="560" y="160" width="120" height="50" rx="25"/><text class="t" x="620" y="190">failed</text>
+  <line class="ln" x1="140" y1="125" x2="270" y2="125" marker-end="url(#c)"/><text class="l mid" x="205" y="116">a worker takes it</text>
+  <line class="ln" x1="400" y1="112" x2="560" y2="72" marker-end="url(#c)"/><text class="l start" x="415" y="78">pages parsed</text>
+  <line class="ln" x1="400" y1="138" x2="560" y2="180" marker-end="url(#c)"/><text class="l start" x="415" y="176">unreadable file, or</text><text class="l start" x="415" y="190">the LLM gave up</text>
+  <path class="ln" d="M80 150 C80 235 400 245 560 200" marker-end="url(#c)"/><text class="l mid" x="170" y="232">job crashed workers 3 times</text>
+  <path class="ln" d="M300 100 C300 55 370 55 370 100" marker-end="url(#c)"/><text class="l mid" x="335" y="48">a worker died: another one restarts it</text>
+  <text class="l start" x="565" y="112">summary may be missing:</text><text class="l start" x="565" y="127">summary_error says why</text>
+</svg>
+<figcaption>A document that is <code>done</code> but has no summary is a deliberate "partial result": the user keeps the parsed pages instead of losing everything.</figcaption>
+</figure>
+
+<h2>3. Where things are stored</h2>
+<p>There is no database. Everything the system remembers is in Redis, and it expires after 24 hours (configurable).</p>
+<table>
+  <tr><th>Redis key</th><th>Type</th><th>Holds</th></tr>
+  <tr><td><code>doc:&lt;id&gt;</code></td><td>hash</td><td>One document: file name, parser, status, error, summary, page count, pages (as JSON), timestamps. Expires after the TTL.</td></tr>
+  <tr><td><code>docs:index</code></td><td>sorted set</td><td>Document ids ordered by creation time, so the list can be shown newest first.</td></tr>
+  <tr><td><code>docs:stream</code></td><td>stream</td><td>The queue: one entry per document waiting to be processed, holding just the id.</td></tr>
+  <tr><td>group <code>docs:workers</code></td><td>consumer group</td><td>Tracks which worker received which entry, how long ago, and how many times.</td></tr>
+</table>
+<p>The uploaded PDF itself is a file on a volume shared by the API and the workers
+(<code>/data/uploads/&lt;id&gt;.pdf</code>); the queue entry carries only the id, never the file.
+The file is deleted as soon as the document finishes.</p>
+
+<h2>4. The code, module by module</h2>
+<table>
+  <tr><th>Module (<code>backend/app/</code>)</th><th>Responsibility</th></tr>
+  <tr><td><code>api/routes.py</code>, <code>api/main.py</code></td><td>The HTTP endpoints and app start-up. Thin: validate, call the helpers below, answer.</td></tr>
+  <tr><td><code>uploads.py</code></td><td>Saves an upload to disk; checks it is a real PDF (by its first bytes, not its name) and within the size limit.</td></tr>
+  <tr><td><code>storage.py</code></td><td>The only place that reads and writes documents in Redis. Includes a safe update that never recreates an expired document.</td></tr>
+  <tr><td><code>queue.py</code></td><td>The only place that talks to the stream: read a new job, take over an abandoned one, acknowledge.</td></tr>
+  <tr><td><code>models.py</code>, <code>errors.py</code>, <code>config.py</code></td><td>Data shapes, the two error kinds (temporary and permanent), and all settings read from environment variables.</td></tr>
+  <tr><td><code>parsers/pypdf_parser.py</code></td><td>Plain text per page with PyPDF.</td></tr>
+  <tr><td><code>parsers/chunked.py</code></td><td>Logic shared by the LLM parsers: cut the PDF into chunks, send chunks in parallel (limited), check the answers, renumber pages.</td></tr>
+  <tr><td><code>parsers/gemini_parser.py</code>, <code>openai_parser.py</code></td><td>How to ask each model: request format, response format. Everything else is shared.</td></tr>
+  <tr><td><code>parsers/registry.py</code></td><td>Which parsers exist, which are usable (is the API key set?), and creation of each parser once.</td></tr>
+  <tr><td><code>llm/gemini.py</code>, <code>openai_client.py</code></td><td>One call to a model with a time limit, error classification (temporary or permanent) and retries.</td></tr>
+  <tr><td><code>llm/retry.py</code></td><td>The retry rule: repeat only temporary errors, with growing pauses, a bounded number of times.</td></tr>
+  <tr><td><code>llm/summarizer.py</code></td><td>Builds the summary request and calls Gemini.</td></tr>
+  <tr><td><code>worker/main.py</code></td><td>The worker loop: take over abandoned jobs, otherwise wait for new ones; heartbeat while a job runs; clean shutdown.</td></tr>
+  <tr><td><code>worker/processor.py</code></td><td>Processes one document from start to a final status. Safe to run twice for the same document.</td></tr>
+</table>
+<p>The frontend (<code>frontend/src/</code>) is small: <code>App.tsx</code> polls the API and owns the list,
+<code>UploadForm.tsx</code> handles file picking, drag and drop and parser choice, <code>DocumentCard.tsx</code> shows one
+document (status, summary, collapsible pages), and <code>api.ts</code> is the only file that calls the backend.</p>
+
+<h2>5. The parsers</h2>
+<table>
+  <tr><th></th><th>PyPDF</th><th>Gemini</th><th>GPT-5 Mini</th></tr>
+  <tr><td>Output</td><td>plain text</td><td>markdown (headings, tables, lists)</td><td>markdown</td></tr>
+  <tr><td>Scanned pages (pictures of text)</td><td>no text found</td><td>reads them</td><td>reads them</td></tr>
+  <tr><td>Speed</td><td>milliseconds, runs inside the worker</td><td>seconds to a minute, network</td><td>seconds to a minute, network</td></tr>
+  <tr><td>Needs</td><td>nothing</td><td><code>GEMINI_API_KEY</code></td><td><code>OPENAI_API_KEY</code> (paid account)</td></tr>
+</table>
+<h3>Why the LLM parsers send chunks</h3>
+<figure>
+<svg viewBox="0 0 840 270" role="img" aria-label="Chunked parsing">
+  <defs><marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1c2430"/></marker></defs>
+  <text class="l start" x="20" y="22">A 12-page PDF</text>
+  <rect class="node blue" x="20" y="34" width="28" height="36" rx="3"/><text class="s" x="34" y="57">1</text>
+  <rect class="node blue" x="52" y="34" width="28" height="36" rx="3"/><text class="s" x="66" y="57">2</text>
+  <rect class="node blue" x="84" y="34" width="28" height="36" rx="3"/><text class="s" x="98" y="57">3</text>
+  <rect class="node blue" x="116" y="34" width="28" height="36" rx="3"/><text class="s" x="130" y="57">4</text>
+  <rect class="node blue" x="148" y="34" width="28" height="36" rx="3"/><text class="s" x="162" y="57">5</text>
+  <rect class="node green" x="200" y="34" width="28" height="36" rx="3"/><text class="s" x="214" y="57">6</text>
+  <rect class="node green" x="232" y="34" width="28" height="36" rx="3"/><text class="s" x="246" y="57">7</text>
+  <rect class="node green" x="264" y="34" width="28" height="36" rx="3"/><text class="s" x="278" y="57">8</text>
+  <rect class="node green" x="296" y="34" width="28" height="36" rx="3"/><text class="s" x="310" y="57">9</text>
+  <rect class="node green" x="328" y="34" width="28" height="36" rx="3"/><text class="s" x="342" y="57">10</text>
+  <rect class="node amber" x="380" y="34" width="28" height="36" rx="3"/><text class="s" x="394" y="57">11</text>
+  <rect class="node amber" x="412" y="34" width="28" height="36" rx="3"/><text class="s" x="426" y="57">12</text>
+  <text class="l start" x="480" y="50">cut into chunks of 5 pages</text><text class="l start" x="480" y="66">(<tspan style="font-family:monospace">PAGES_PER_CHUNK</tspan>)</text>
+
+  <rect class="node blue" x="20" y="120" width="190" height="44" rx="8"/><text class="t" x="115" y="140">request 1</text><text class="s" x="115" y="156">pages 1 to 5</text>
+  <rect class="node green" x="240" y="120" width="190" height="44" rx="8"/><text class="t" x="335" y="140">request 2</text><text class="s" x="335" y="156">pages 6 to 10</text>
+  <rect class="node amber" x="460" y="120" width="190" height="44" rx="8"/><text class="t" x="555" y="140">request 3</text><text class="s" x="555" y="156">pages 11 to 12</text>
+  <line class="ln" x1="90" y1="72" x2="115" y2="118" marker-end="url(#d)"/><line class="ln" x1="290" y1="72" x2="335" y2="118" marker-end="url(#d)"/><line class="ln" x1="410" y1="72" x2="520" y2="118" marker-end="url(#d)"/>
+  <text class="l start" x="680" y="136">up to 3 at the same time</text><text class="l start" x="680" y="152">(<tspan style="font-family:monospace">LLM_CONCURRENCY</tspan>)</text>
+
+  <rect class="node" x="20" y="212" width="630" height="40" rx="8"/><text class="t" x="335" y="237">answers checked, pages renumbered 1 to 12 and put back in order</text>
+  <line class="ln" x1="115" y1="165" x2="115" y2="211" marker-end="url(#d)"/><line class="ln" x1="335" y1="165" x2="335" y2="211" marker-end="url(#d)"/><line class="ln" x1="555" y1="165" x2="555" y2="211" marker-end="url(#d)"/>
+</svg>
+<figcaption>One request for a whole long PDF could exceed the model's output limit; one request per page would use up the free tier's request quota. Chunks are the compromise. If one chunk fails for good, the others are cancelled.</figcaption>
+</figure>
+<p>Each answer is validated: the model must return exactly as many pages as were sent, as JSON in a fixed
+shape. An answer that does not match counts as a temporary error and the request is repeated.</p>
+
+<h2>6. When things go wrong</h2>
+<h3>A worker dies in the middle of a job</h3>
+<figure>
+<svg viewBox="0 0 840 260" role="img" aria-label="Crash recovery">
+  <defs><marker id="e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1c2430"/></marker></defs>
+  <text class="t" x="55" y="80">worker A</text><text class="t" x="55" y="170">worker B</text>
+  <line class="ln" x1="110" y1="225" x2="820" y2="225" marker-end="url(#e)"/><text class="s" x="800" y="246" style="text-anchor:end">time</text>
+  <rect class="node amber" x="120" y="55" width="210" height="40" rx="8"/><text class="t" x="225" y="79">takes the job (delivery 1)</text>
+  <path class="ln bad" d="M330 60 L350 90 M350 60 L330 90"/><text class="l start" x="300" y="45" style="fill:#b42318">crashes</text>
+  <rect class="node" x="350" y="100" width="190" height="44" rx="6" style="stroke-dasharray:4 3"/>
+  <text class="s" x="445" y="118">job stays "pending" in Redis,</text><text class="s" x="445" y="134">idle for CLAIM_IDLE_SECONDS</text>
+  <rect class="node green" x="560" y="145" width="250" height="40" rx="8"/><text class="t" x="685" y="169">takes it over (delivery 2), finishes</text>
+  <text class="l start" x="560" y="205" style="fill:#17794a">acknowledges: the job is done, nothing lost</text>
+</svg>
+<figcaption>Redis keeps an entry until a worker acknowledges it. While a job is running, the worker keeps signalling that it is alive, so a slow job is not mistaken for a crashed one.</figcaption>
+</figure>
+<p>If the same document keeps killing its workers, Redis's delivery counter exceeds
+<code>MAX_DELIVERIES</code> (3) and the document is marked <code>failed</code> instead of looping forever.</p>
+
+<h3>What happens on each kind of failure</h3>
+<table>
+  <tr><th>Situation</th><th>What the system does</th><th>User sees</th></tr>
+  <tr><td>Upload is not a PDF, too large, or has an unavailable parser</td><td>Rejects the whole request before anything is saved or queued.</td><td>An error under the upload form, naming the file.</td></tr>
+  <tr><td>PDF is corrupt, password-protected or empty</td><td>Permanent error: no retry.</td><td>Status Failed with the reason.</td></tr>
+  <tr><td>LLM rate limit, server error, network problem, timeout</td><td>Temporary error: up to 3 attempts with pauses of about 2 s and 8 s.</td><td>Normal result if a retry works; otherwise a clear message including "gave up after 3 attempts".</td></tr>
+  <tr><td>Wrong API key, rejected request, no OpenAI credit</td><td>Permanent error: no retry.</td><td>The reason, for example "Gemini rejected the API key".</td></tr>
+  <tr><td>Parsing worked but the summary failed</td><td>Keeps the pages, records why the summary is missing.</td><td>Status Done, pages shown, a notice instead of the summary.</td></tr>
+  <tr><td>Scanned PDF with PyPDF</td><td>Parses to empty pages; skips the summary call.</td><td>Done, with "no extractable text" and a hint to use an LLM parser.</td></tr>
+  <tr><td>A worker dies mid-job</td><td>Another worker takes the job over (see above).</td><td>Nothing; the document just finishes slightly later.</td></tr>
+  <tr><td>Unexpected bug while processing one document</td><td>Marks that document failed; the worker keeps running.</td><td>Failed, with a generic message (internals are not exposed).</td></tr>
+</table>
+
+<h2>7. Decisions and trade-offs</h2>
+<table>
+  <tr><th>Decision</th><th>Why</th></tr>
+  <tr><td>Redis Streams with a consumer group as the queue</td><td>Required by the task; it also gives "each job to exactly one worker", persistence, and takeover of abandoned jobs without extra code.</td></tr>
+  <tr><td>The API never parses; it only queues</td><td>Uploads stay fast and the API stays responsive however slow the parsing is. Workers scale independently.</td></tr>
+  <tr><td>Document and queue entry written in one transaction</td><td>A document can never exist without being queued, or the other way round.</td></tr>
+  <tr><td>Only the id goes through the queue; the file sits on a shared volume</td><td>Keeps queue entries tiny and avoids storing PDFs in memory-limited Redis.</td></tr>
+  <tr><td>Partial result when the summary fails</td><td>Delivering the parsed pages is worth more than rejecting everything because one optional step failed.</td></tr>
+  <tr><td>Temporary and permanent errors handled differently</td><td>Retrying a rate limit makes sense; retrying a wrong API key never does.</td></tr>
+  <tr><td>Summary always by Gemini, never selectable</td><td>The task states it; the parser, by contrast, is the user's choice.</td></tr>
+  <tr><td>Parsers and LLM clients behind small interfaces</td><td>Adding GPT-5 Mini needed one new parser class and one client; the queue, worker and API did not change.</td></tr>
+  <tr><td>Polling instead of websockets</td><td>Simplest thing that works; the document list is small and requests are cheap.</td></tr>
+  <tr><td>No database</td><td>The task is about asynchronous processing; Redis alone is enough for results that expire. A production system would store results in a database and keep Redis only as the queue.</td></tr>
+</table>
+
+<h2>8. Run it and check it</h2>
+<table>
+  <tr><th>Goal</th><th>Command</th></tr>
+  <tr><td>Start everything</td><td><code>docker compose up --build</code> (site on port 3000, API on 8000)</td></tr>
+  <tr><td>Run all tests with coverage</td><td><code>docker compose --profile test run --rm tests</code></td></tr>
+  <tr><td>Follow what the workers do</td><td><code>docker compose logs -f worker</code></td></tr>
+  <tr><td>Interactive API documentation</td><td>open <code>http://localhost:8000/docs</code></td></tr>
+</table>
+<p>The README has curl examples and a description of the sample PDFs, including one that is a scan, which
+is the quickest way to see the difference between the parsers.</p>
+
+</main>
+</body>
+</html>

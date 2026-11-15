@@ -32,12 +32,14 @@ class Worker:
         consumer: str,
         parser_factory: Callable[[ParserName], Parser] | None = None,
         summarizer: Summarizer | None = None,
+        block_ms: int = BLOCK_MS,
     ):
         self.redis = redis
         self.settings = settings
         self.consumer = consumer
         self.parser_factory = parser_factory or build_parser_factory(settings)
         self.summarizer = summarizer
+        self.block_ms = block_ms
         self.repo = DocumentRepository(redis, settings.document_ttl_seconds)
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -45,20 +47,22 @@ class Worker:
         logger.info("worker %s started", self.consumer)
         while not stop.is_set():
             try:
-                await self.run_once(BLOCK_MS)
+                await self.run_once(self.block_ms)
             except RedisError:
                 logger.exception("Redis error, retrying shortly")
                 await asyncio.sleep(2)
         logger.info("worker %s stopped", self.consumer)
 
-    async def run_once(self, block_ms: int = BLOCK_MS) -> int:
+    async def run_once(self, block_ms: int | None = None) -> int:
         """Handle abandoned entries first, otherwise wait for a new one.
         Returns how many entries were handled."""
         entries = await queue.claim_stale(
             self.redis, self.consumer, self.settings.claim_idle_seconds * 1000
         )
         if not entries:
-            entries = await queue.read_new(self.redis, self.consumer, block_ms)
+            entries = await queue.read_new(
+                self.redis, self.consumer, self.block_ms if block_ms is None else block_ms
+            )
         for entry in entries:
             await self.handle(entry)
         return len(entries)

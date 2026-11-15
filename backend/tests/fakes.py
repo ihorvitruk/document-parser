@@ -1,7 +1,11 @@
 """Test doubles for the Gemini SDK."""
 
 import asyncio
+import json
+from io import BytesIO
 from types import SimpleNamespace
+
+from pypdf import PdfReader
 
 
 class Recorder:
@@ -95,3 +99,20 @@ class OpenAIHandlerSdk(FakeOpenAISdk):
         self.requests.append(kwargs)
         content = kwargs["input"][0]["content"]
         return SimpleNamespace(output_text=self.handler(content), status="completed")
+
+
+def chunk_pages(contents) -> list[str]:
+    """The text of each page of the PDF part in a Gemini request."""
+    part = contents[0]
+    assert part.inline_data.mime_type == "application/pdf"
+    return [p.extract_text().strip() for p in PdfReader(BytesIO(part.inline_data.data)).pages]
+
+
+def markdown_answer(contents) -> str:
+    """What a well-behaved Gemini returns: each page's text, in bold."""
+    return json.dumps(
+        [
+            {"page_number": i, "markdown": f"**{text}**"}
+            for i, text in enumerate(chunk_pages(contents), start=1)
+        ]
+    )

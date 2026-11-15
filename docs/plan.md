@@ -64,9 +64,19 @@ Compose stack and a commit. Decisions referenced here are in `decisions.md`.
 
 ## 9. Finish
 
-- Integration test for the whole pipeline, coverage report.
-- README: one run command, curl examples, design notes, limitations.
-- Sample PDFs in `samples/`, zip without `.venv`, `node_modules`, `.env`, `.git`.
+- Integration tests against a real Redis (fake LLM): upload -> stream -> two workers
+  -> result, crash recovery, partial result. Coverage report.
+  Run with `docker compose --profile test run --rm tests`.
+- Sample PDFs in `samples/`: a text report with a table, a short article, and a
+  scanned (image-only) document that shows the difference between the parsers.
+- README: one run command, curl examples, tests, troubleshooting, limitations.
+- `docs/how-it-works.html`: a visual explanation of the system (diagrams, request
+  flow, modules, Redis keys, error handling) for readers new to the project.
+- `docs/REPORT.md`: time and token statistics of building this project, by phase
+  (planning, implementation, finishing) and by model. Token and usage numbers are read
+  from the session tooling; per-step timings come from the git history.
+- `scripts/package.sh`: builds the zip without `.venv`, `node_modules`, `.git` and
+  `.env`. Verified by unpacking it into a clean folder and running it.
 
 ## Optional
 

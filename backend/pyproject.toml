@@ -36,3 +36,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = ["integration: needs a running Redis"]
+filterwarnings = [
+    "ignore::SyntaxWarning",  # from third-party SDKs compiled on first import
+    "ignore::DeprecationWarning:starlette.testclient",
+]

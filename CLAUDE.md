@@ -19,3 +19,4 @@ Before writing code, read these three files:
   reviewer needs: clear decisions and how to run.
 - Commit locally after each plan step. Never push.
 - Never commit API keys; they live in `.env` (git-ignored).
+- Keep `docs/REPORT.md` (time and token statistics) up to date at the end of the work.
