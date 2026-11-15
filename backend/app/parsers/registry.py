@@ -1,19 +1,17 @@
+from collections.abc import Callable
+
 from app.config import Settings
 from app.errors import PermanentError
+from app.llm.gemini import create_gemini_client
 from app.models import ParserInfo, ParserName
 from app.parsers.base import Parser
+from app.parsers.gemini_parser import GeminiParser
 from app.parsers.pypdf_parser import PyPdfParser
 
 LABELS = {
     ParserName.pypdf: "PyPDF (text only)",
     ParserName.gemini: "Google Gemini (markdown)",
     ParserName.gpt5mini: "OpenAI GPT-5 Mini",
-}
-
-# Parsers that exist so far. The Gemini and GPT-5 Mini parsers are added to this
-# mapping as they are built.
-_IMPLEMENTATIONS: dict[ParserName, type[Parser]] = {
-    ParserName.pypdf: PyPdfParser,
 }
 
 
@@ -35,8 +33,30 @@ def list_parsers(settings: Settings) -> list[ParserInfo]:
     return infos
 
 
-def get_parser(name: ParserName) -> Parser:
-    implementation = _IMPLEMENTATIONS.get(name)
-    if implementation is None:
-        raise PermanentError(f"The '{name}' parser is not implemented")
-    return implementation()
+def _create(name: ParserName, settings: Settings) -> Parser:
+    available, reason = parser_availability(name, settings)
+    if not available:
+        raise PermanentError(f"The '{name}' parser is unavailable: {reason}")
+    if name is ParserName.pypdf:
+        return PyPdfParser()
+    if name is ParserName.gemini:
+        return GeminiParser(
+            create_gemini_client(settings),
+            pages_per_chunk=settings.pages_per_chunk,
+            concurrency=settings.llm_concurrency,
+        )
+    # The GPT-5 Mini parser is added here when it is built.
+    raise PermanentError(f"The '{name}' parser is not implemented")
+
+
+def build_parser_factory(settings: Settings) -> Callable[[ParserName], Parser]:
+    """Returns a function that gives the parser for a name, creating each one (and
+    its API client) once and reusing it for every document."""
+    instances: dict[ParserName, Parser] = {}
+
+    def factory(name: ParserName) -> Parser:
+        if name not in instances:
+            instances[name] = _create(name, settings)
+        return instances[name]
+
+    return factory

@@ -7,6 +7,7 @@ import httpx
 from google import genai
 from google.genai import errors, types
 
+from app.config import Settings
 from app.errors import PermanentError, ProcessingError, TransientError
 from app.llm.retry import call_with_retries
 
@@ -53,16 +54,24 @@ class GeminiClient:
         self._sleep = sleep
         self._client = client or genai.Client(api_key=api_key)
 
-    async def generate(self, contents: Any, **config: Any) -> str:
-        """Return the response text. Raises TransientError (after retries) or
-        PermanentError."""
+    async def generate(
+        self, contents: Any, *, parse: Callable[[str], Any] | None = None, **config: Any
+    ) -> Any:
+        """Return the response text, or `parse(text)` when given.
+
+        `parse` runs inside the retry loop: if it raises TransientError (for example
+        because the model returned malformed JSON) the call is made again.
+        Raises TransientError (after retries) or PermanentError.
+        """
         return await call_with_retries(
-            lambda: self._generate_once(contents, config),
+            lambda: self._generate_once(contents, config, parse),
             attempts=self.attempts,
             sleep=self._sleep,
         )
 
-    async def _generate_once(self, contents: Any, config: dict[str, Any]) -> str:
+    async def _generate_once(
+        self, contents: Any, config: dict[str, Any], parse: Callable[[str], Any] | None
+    ) -> Any:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 response = await self._client.aio.models.generate_content(
@@ -79,4 +88,13 @@ class GeminiClient:
         text = response.text
         if not text or not text.strip():
             raise TransientError("Gemini returned an empty response")
-        return text
+        return parse(text) if parse else text
+
+
+def create_gemini_client(settings: Settings) -> GeminiClient:
+    return GeminiClient(
+        settings.gemini_api_key,
+        settings.gemini_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        attempts=settings.llm_max_attempts,
+    )

@@ -13,7 +13,7 @@ from app.config import Settings, get_settings
 from app.llm.summarizer import Summarizer, create_summarizer
 from app.models import ParserName
 from app.parsers.base import Parser
-from app.parsers.registry import get_parser
+from app.parsers.registry import build_parser_factory
 from app.storage import DocumentRepository
 from app.worker.processor import fail_document, process_document
 
@@ -30,13 +30,13 @@ class Worker:
         redis: Redis,
         settings: Settings,
         consumer: str,
-        parser_factory: Callable[[ParserName], Parser] = get_parser,
+        parser_factory: Callable[[ParserName], Parser] | None = None,
         summarizer: Summarizer | None = None,
     ):
         self.redis = redis
         self.settings = settings
         self.consumer = consumer
-        self.parser_factory = parser_factory
+        self.parser_factory = parser_factory or build_parser_factory(settings)
         self.summarizer = summarizer
         self.repo = DocumentRepository(redis, settings.document_ttl_seconds)
 

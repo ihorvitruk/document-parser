@@ -1,9 +1,7 @@
 import pytest
 
 from app.errors import PermanentError
-from app.models import ParserName
 from app.parsers.pypdf_parser import PyPdfParser
-from app.parsers.registry import get_parser
 from tests.pdf_factory import build_pdf, encrypt_pdf
 
 
@@ -70,13 +68,3 @@ async def test_pdf_without_pages_is_a_permanent_error(write_pdf):
 
     with pytest.raises(PermanentError, match="no pages"):
         await PyPdfParser().parse(path)
-
-
-def test_registry_returns_the_pypdf_parser():
-    parser = get_parser(ParserName.pypdf)
-    assert isinstance(parser, PyPdfParser)
-
-
-def test_registry_reports_parsers_that_are_not_built_yet():
-    with pytest.raises(PermanentError, match="not implemented"):
-        get_parser(ParserName.gemini)

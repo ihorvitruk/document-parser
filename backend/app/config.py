@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     document_ttl_hours: int = 24
 
     llm_max_attempts: int = 3
-    llm_timeout_seconds: int = 60
+    llm_timeout_seconds: int = 120  # Gemini took 40 s for five dense pages in testing
     pages_per_chunk: int = 5
+    llm_concurrency: int = 3  # parallel Gemini requests per document
     claim_idle_seconds: int = 120
     max_deliveries: int = 3
 

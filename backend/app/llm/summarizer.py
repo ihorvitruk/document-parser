@@ -1,7 +1,7 @@
 from typing import Protocol
 
 from app.config import Settings
-from app.llm.gemini import GeminiClient
+from app.llm.gemini import GeminiClient, create_gemini_client
 from app.models import Page
 
 # About 100k tokens: far below the model's context window, and small enough to stay
@@ -51,10 +51,4 @@ class GeminiSummarizer:
 def create_summarizer(settings: Settings) -> Summarizer | None:
     if not settings.gemini_api_key:
         return None
-    client = GeminiClient(
-        settings.gemini_api_key,
-        settings.gemini_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-        attempts=settings.llm_max_attempts,
-    )
-    return GeminiSummarizer(client)
+    return GeminiSummarizer(create_gemini_client(settings))

@@ -10,16 +10,7 @@ from app.llm.gemini import GeminiClient, classify_error
 from app.llm.retry import call_with_retries
 from app.llm.summarizer import MAX_INPUT_CHARS, GeminiSummarizer, build_prompt
 from app.models import Page
-
-
-class Recorder:
-    """Stands in for asyncio.sleep so tests do not wait."""
-
-    def __init__(self):
-        self.delays = []
-
-    async def __call__(self, delay):
-        self.delays.append(delay)
+from tests.fakes import FakeSdk, Recorder
 
 
 def flaky(*outcomes):
@@ -118,24 +109,6 @@ def test_unknown_exception_is_not_classified():
 
 
 # --- Gemini client -------------------------------------------------------------
-
-
-class FakeSdk:
-    """Looks like genai.Client for the one call we use."""
-
-    def __init__(self, *outcomes):
-        self.outcomes = list(outcomes)
-        self.requests = []
-        self.aio = SimpleNamespace(models=SimpleNamespace(generate_content=self._generate))
-
-    async def _generate(self, **kwargs):
-        self.requests.append(kwargs)
-        outcome = self.outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        if callable(outcome):
-            return await outcome()
-        return SimpleNamespace(text=outcome)
 
 
 def client_with(sdk, **kwargs):

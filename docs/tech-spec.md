@@ -50,7 +50,8 @@ docker-compose.yml
 | `MAX_UPLOAD_MB` | `20` | per file |
 | `DOCUMENT_TTL_HOURS` | `24` | |
 | `LLM_MAX_ATTEMPTS` | `3` | per LLM call |
-| `LLM_TIMEOUT_SECONDS` | `60` | per LLM call attempt |
+| `LLM_TIMEOUT_SECONDS` | `120` | per LLM call attempt |
+| `LLM_CONCURRENCY` | `3` | parallel Gemini requests per document |
 | `PAGES_PER_CHUNK` | `5` | pages per LLM parsing request |
 | `CLAIM_IDLE_SECONDS` | `120` | idle time before a pending entry is reclaimed |
 | `MAX_DELIVERIES` | `3` | deliveries before a document is marked failed |

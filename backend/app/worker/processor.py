@@ -6,7 +6,6 @@ from app.errors import PermanentError, ProcessingError
 from app.llm.summarizer import Summarizer, has_text
 from app.models import DocumentStatus, Page, ParserName
 from app.parsers.base import Parser
-from app.parsers.registry import get_parser
 from app.storage import DocumentRepository
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,7 @@ async def process_document(
     doc_id: str,
     repo: DocumentRepository,
     settings: Settings,
-    parser_factory: Callable[[ParserName], Parser] = get_parser,
+    parser_factory: Callable[[ParserName], Parser],
     summarizer: Summarizer | None = None,
 ) -> None:
     """Process one document to a terminal state.
